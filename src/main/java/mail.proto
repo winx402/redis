@@ -1,0 +1,12 @@
+// See README.txt for information and build instructions.
+
+package com.redis.domain;
+
+option java_package = "com.redis.domain";
+option java_outer_classname = "Mail";
+
+message mail {
+  required string getter = 1;
+  required string title = 2;        // Unique ID number for this person.
+  optional string content = 3;
+  }

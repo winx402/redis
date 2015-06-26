@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"  
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:p="http://www.springframework.org/schema/p"  
+    xmlns:context="http://www.springframework.org/schema/context"  
+    xmlns:jee="http://www.springframework.org/schema/jee" xmlns:tx="http://www.springframework.org/schema/tx"  
+    xmlns:aop="http://www.springframework.org/schema/aop"  
+    xmlns:rabbit="http://www.springframework.org/schema/rabbit"
+    xmlns:task="http://www.springframework.org/schema/task"
+    xsi:schemaLocation="  
+            http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd  
+            http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+            http://www.springframework.org/schema/aop   
+      		http://www.springframework.org/schema/aop/spring-aop-3.0.xsd
+      		http://www.springframework.org/schema/tx
+         	http://www.springframework.org/schema/tx/spring-tx-3.0.xsd
+         	http://www.springframework.org/schema/rabbit
+            http://www.springframework.org/schema/rabbit/spring-rabbit-1.0.xsd
+            http://www.springframework.org/schema/task  
+    		http://www.springframework.org/schema/task/spring-task-4.1.xsd">  
+   <!-- 属性文件读入 -->  
+    <context:component-scan base-package="com.redis" />
+	<context:annotation-config />
+	<aop:aspectj-autoproxy/>
+    <bean id="userLogger" class="com.redis.aspect.UserLogger"></bean>
+    
+    <bean id="propertyConfigurer" class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer">
+		<property name="locations">
+			<list>
+				<value>classpath:redis.properties</value>
+				<value>classpath:database.properties</value>
+			</list>
+		</property>
+	</bean>
+    <bean id="jedisPoolConfig" class="redis.clients.jedis.JedisPoolConfig">  
+    	<property name="maxWaitMillis" value="${redis.pool.maxWait}" />
+    	<property name="maxTotal" value="${redis.pool.maxActive}" />
+	    <property name="maxIdle" value="${redis.pool.maxIdle}" />  
+	    <property name="testOnBorrow" value="${redis.pool.testOnBorrow}" />  
+	</bean>  
+      <!-- 配置redis 缓存服务器 -->
+    <bean id="connectionFactory" class="org.springframework.data.redis.connection.jedis.JedisConnectionFactory"  
+        p:host-name="${redis.host}" p:port="${redis.port}" p:password="${redis.pass}" />  
+      <!-- redis操作模板 -->
+    <bean id="redisTemplate" class="org.springframework.data.redis.core.StringRedisTemplate">  
+        <property name="connectionFactory"   ref="connectionFactory" />
+        <property name="HashKeySerializer">  
+    		<bean class="org.springframework.data.redis.serializer.StringRedisSerializer"></bean>  
+		</property>    
+		<property name="HashValueSerializer">  
+		    <bean class="org.springframework.data.redis.serializer.StringRedisSerializer"></bean>  
+		</property>
+    </bean>
+    
+    <!-- 数据库连接池 -->  
+    <bean id="dataSource" class="org.apache.commons.dbcp.BasicDataSource" destroy-method="close">  
+        <property name="driverClassName" value="${database.driverClassName}" />  
+        <property name="url" value="${database.url}" />  
+        <property name="username" value="${database.username}" />  
+        <property name="password" value="${database.password}" />  
+    </bean>  
+      
+    <!-- Mybatis's sqlSessionFactory config -->  
+    <bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">  
+        <property name="dataSource" ref="dataSource"></property>  
+    </bean>  
+      
+    <bean name="transactionManager"  
+        class="org.springframework.jdbc.datasource.DataSourceTransactionManager">  
+        <property name="dataSource" ref="dataSource"></property>  
+    </bean>  
+      
+    <!-- scan  mappers and let them be autowired -->  
+    <bean class="org.mybatis.spring.mapper.MapperScannerConfigurer">         
+        <property name="basePackage" value="com.redis.mybatisDao" />  
+    </bean>
+    
+    
+	<!-- 事务配置 -->
+	<tx:advice id="userTxAdvice" transaction-manager="transactionManager">
+	  <tx:attributes>
+	    <tx:method name="delete*" propagation="REQUIRED" read-only="false" 
+	    	rollback-for="java.lang.Exception" no-rollback-for="java.lang.RuntimeException"/>
+	    <tx:method name="insert*" propagation="REQUIRED" read-only="false" 
+	    	rollback-for="java.lang.RuntimeException" />
+	    <tx:method name="update*" propagation="REQUIRED" read-only="false" 
+	        rollback-for="java.lang.Exception" />
+	      
+	    <tx:method name="find*" propagation="SUPPORTS"/>
+	    <tx:method name="get*" propagation="SUPPORTS"/>
+	    <tx:method name="select*" propagation="SUPPORTS"/>
+	  </tx:attributes>
+	</tx:advice>
+  
+  	<aop:config>    
+    	<aop:pointcut id="pc" expression="execution(public * com.redis.service.*.*(..))" /> <!--把事务控制在Service层-->
+    	<aop:advisor pointcut-ref="pc" advice-ref="userTxAdvice" />
+  	</aop:config>
+  	
+  	<!-- 异步的线程池，线程池的最在数不能设定太小，不然<rabbit:listener/>/@RabbitListener太多的话，会出现发无法正常消费问题 -->  
+    <task:executor id="taskExecutor" pool-size="1-4" queue-capacity="128" />
+  	
+  	<!-- 连接rabbitmq服务配置  -->
+   <rabbit:connection-factory id="rabbitConnectionFactory" host="localhost" username="guest"
+        password="guest" port="5672"  />
+        
+   <rabbit:admin connection-factory="rabbitConnectionFactory"/>
+   <!-- queue 队列声明-->
+   <rabbit:queue id="queue_one" durable="true" auto-delete="false" exclusive="false" name="queue_one"/>
+   
+   <!-- exchange queue binging key 绑定 -->
+    <rabbit:direct-exchange name="my-mq-exchange" durable="true" auto-delete="false" id="my-mq-exchange">
+        <rabbit:bindings>
+            <rabbit:binding queue="queue_one" key="queue_one_key"/>
+        </rabbit:bindings>
+    </rabbit:direct-exchange>
+    
+     <!-- spring amqp默认的是jackson 的一个插件,目的将生产者生产的数据转换为json存入消息队列，由于fastjson的速度快于jackson,这里替换为fastjson的一个实现  -->
+    <!-- <bean id="jsonMessageConverter"  class="mq.convert.FastJsonMessageConverter"></bean> -->
+    
+    <!-- spring template声明-->
+    <rabbit:template exchange="my-mq-exchange" id="amqpTemplate"  connection-factory="rabbitConnectionFactory" />
+    
+</beans>
